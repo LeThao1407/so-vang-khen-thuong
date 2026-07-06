@@ -1,0 +1,6 @@
+{
+  "name": "Sổ Vàng Khen Thưởng",
+  "description": "Bảng vinh danh thành tích học tập và tự động tính tiền thưởng cho các cháu với phân quyền Ông Bà (Admin) và Học sinh.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

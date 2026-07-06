@@ -1,0 +1,227 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Elegant and modern dark mode overrides using Tailwind CSS custom properties */
+.dark {
+  /* Surface and Core Colors */
+  --color-white: #0f172a; /* Deep slate card/modal bg */
+  --color-slate-50: #020617; /* Darkest slate for main background */
+  --color-slate-100: #1e293b; /* Medium dark slate for internal containers */
+  --color-slate-200: #334155; /* Subtle dark slate for borders */
+  --color-slate-300: #475569;
+  --color-slate-400: #64748b; /* Muted text and boundaries */
+  --color-slate-500: #94a3b8; /* Readable secondary text */
+  --color-slate-600: #cbd5e1;
+  --color-slate-700: #e2e8f0;
+  --color-slate-800: #f1f5f9; /* Highly readable bold titles */
+  --color-slate-900: #f8fafc; /* Pure white for major display text */
+  /* DO NOT override --color-slate-950, let it remain dark for text-slate-950 inside yellow/gold tags */
+
+  /* Semi-transparent variations for background overlays and blurs */
+  --color-slate-50\/50: rgba(2, 6, 23, 0.5);
+  --color-slate-100\/80: rgba(30, 41, 59, 0.8);
+  --color-slate-100\/60: rgba(30, 41, 59, 0.6);
+  --color-slate-200\/80: rgba(51, 65, 85, 0.8);
+  --color-white\/80: rgba(15, 23, 42, 0.8);
+
+  /* Indigo Primary Theme Color adjustment for Dark Mode */
+  --color-indigo-50: #1e1b4b; /* Deep rich blue-indigo for highlighting */
+  --color-indigo-100: #312e81;
+  --color-indigo-200: #3730a3;
+  --color-indigo-600: #818cf8; /* Light Indigo-400 for high-contrast dark text */
+  --color-indigo-700: #a5b4fc;
+  --color-indigo-950: #ffffff;
+
+  --color-indigo-50\/50: rgba(30, 27, 75, 0.5);
+  --color-indigo-50\/80: rgba(30, 27, 75, 0.8);
+
+  /* Correcting element patterns where white text was converted to dark */
+  & .text-white {
+    color: #ffffff !important;
+  }
+  & .border-white {
+    border-color: rgba(255, 255, 255, 0.1) !important;
+  }
+
+  /* Target buttons and elements that are supposed to remain dark in dark mode */
+  & .bg-slate-900 {
+    background-color: #1e293b !important;
+  }
+  & .bg-slate-900:hover {
+    background-color: #334155 !important;
+  }
+  & .bg-slate-950 {
+    background-color: #0b1329 !important;
+  }
+  & .hover\:bg-slate-800:hover {
+    background-color: #1e293b !important;
+  }
+  & .hover\:bg-slate-900:hover {
+    background-color: #1e293b !important;
+  }
+
+  /* Highlight Badges / Alerts in Dark Mode */
+  /* Emerald (Success/Cash) */
+  & .bg-emerald-50 {
+    background-color: rgba(16, 185, 129, 0.12) !important;
+  }
+  & .bg-emerald-100\/80 {
+    background-color: rgba(16, 185, 129, 0.18) !important;
+  }
+  & .text-emerald-600,
+  & .text-emerald-700,
+  & .text-emerald-800 {
+    color: #34d399 !important;
+  }
+  & .border-emerald-200,
+  & .border-emerald-200\/50,
+  & .border-emerald-100 {
+    border-color: rgba(16, 185, 129, 0.25) !important;
+  }
+
+  /* Rose (Deduction/Action) */
+  & .bg-rose-50 {
+    background-color: rgba(244, 63, 94, 0.12) !important;
+  }
+  & .bg-rose-100 {
+    background-color: rgba(244, 63, 94, 0.2) !important;
+  }
+  & .text-rose-600,
+  & .text-rose-700,
+  & .text-rose-800 {
+    color: #fda4af !important;
+  }
+  & .border-rose-200,
+  & .border-rose-200\/50,
+  & .border-rose-100 {
+    border-color: rgba(244, 63, 94, 0.25) !important;
+  }
+
+  /* Amber (Warning/Trophy) */
+  & .bg-amber-50 {
+    background-color: rgba(245, 158, 11, 0.12) !important;
+  }
+  & .bg-amber-100,
+  & .bg-amber-100\/60,
+  & .bg-amber-100\/80,
+  & .bg-amber-100\/90 {
+    background-color: rgba(245, 158, 11, 0.18) !important;
+  }
+  & .text-amber-600,
+  & .text-amber-700,
+  & .text-amber-800 {
+    color: #fbe047 !important;
+  }
+  & .border-amber-200,
+  & .border-amber-200\/50,
+  & .border-amber-100 {
+    border-color: rgba(245, 158, 11, 0.25) !important;
+  }
+
+  /* Soften hover behaviors for icons and neutral items */
+  & .hover\:bg-slate-50:hover {
+    background-color: #1e293b !important;
+  }
+  & .hover\:bg-slate-100:hover {
+    background-color: #1e293b !important;
+  }
+
+  /* Custom Recharts Tooltip styles for Dark Mode */
+  & .recharts-default-tooltip {
+    background-color: #0f172a !important;
+    border: 1px solid #334155 !important;
+    border-radius: 12px !important;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5) !important;
+  }
+  & .recharts-tooltip-label {
+    color: #f1f5f9 !important;
+    font-weight: 700 !important;
+  }
+  & .recharts-tooltip-item {
+    color: #cbd5e1 !important;
+  }
+  & .recharts-cartesian-grid line {
+    stroke: #1e293b !important;
+  }
+  & .recharts-text {
+    fill: #94a3b8 !important;
+  }
+
+  /* Adjust default shadows to be softer, dark shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -4px rgba(0, 0, 0, 0.5);
+}
+
+/* Pristine, high-fidelity styles for the wallet gradient bg to be always dark and elegant */
+.wallet-gradient-bg {
+  background: linear-gradient(135deg, #0f172a 0%, #1a1b41 50%, #030712 100%) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Force light gray labels inside the dark wallet gradient card in both light & dark modes */
+.wallet-gradient-bg .text-slate-400 {
+  color: #cbd5e1 !important;
+}
+.wallet-gradient-bg .text-slate-300 {
+  color: #e2e8f0 !important;
+}
+
+/* Always-dark panel for the left visual brand card in login modal for both light and dark modes */
+.login-left-brand-panel {
+  background: linear-gradient(135deg, #090d1a 0%, #1e1b4b 50%, #02040a 100%) !important;
+  color: #ffffff !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.login-left-brand-panel h3 {
+  color: #ffffff !important;
+}
+
+.login-left-brand-panel p {
+  color: #cbd5e1 !important;
+}
+
+.login-left-brand-panel .text-slate-400 {
+  color: #94a3b8 !important;
+}
+
+.login-left-brand-panel .text-slate-300 {
+  color: #e2e8f0 !important;
+}
+
+.login-left-brand-panel .border-slate-800 {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Quick Select Profile buttons alignment & aesthetics */
+.profile-select-grid {
+  scrollbar-width: thin;
+}
+.profile-select-grid::-webkit-scrollbar {
+  width: 5px;
+}
+.profile-select-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+.profile-select-grid::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 9999px;
+}
+
+
