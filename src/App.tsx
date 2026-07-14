@@ -267,6 +267,14 @@ export default function App() {
   const [userFormRole, setUserFormRole] = useState<'user' | 'admin'>('user');
   const [userFormGrade, setUserFormGrade] = useState('Cấp 2');
 
+  // Admin Edit Rule States
+  const [editingRule, setEditingRule] = useState<RewardRule | null>(null);
+  const [isAddingRule, setIsAddingRule] = useState(false);
+  const [ruleCategory, setRuleCategory] = useState('Cấp 1');
+  const [ruleSubCategory, setRuleSubCategory] = useState('Điểm số');
+  const [ruleValue, setRuleValue] = useState('');
+  const [ruleRewardAmount, setRuleRewardAmount] = useState<number>(0);
+
   // Toast & Custom Confirm Dialog States
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -519,6 +527,17 @@ export default function App() {
     }
   }, [currentUser]);
 
+  // Sync scoreGrade with available options for achGradeLevel automatically
+  useEffect(() => {
+    const availableRules = rules.filter(r => r.subCategory === 'Điểm số' && r.category === achGradeLevel);
+    if (availableRules.length > 0) {
+      const exists = availableRules.some(r => r.value === scoreGrade);
+      if (!exists) {
+        setScoreGrade(availableRules[0].value);
+      }
+    }
+  }, [achGradeLevel, rules, scoreGrade]);
+
   // Handle Log In
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -654,21 +673,12 @@ export default function App() {
     }
 
     if (achType === 'grade') {
-      let baseReward = 0;
-      if (achGradeLevel === 'Cấp 1') {
-        if (scoreGrade === '9.5') baseReward = 10000;
-        if (scoreGrade === '10') baseReward = 20000;
-      } else if (achGradeLevel === 'Cấp 2') {
-        if (scoreGrade === '9') baseReward = 10000;
-        if (scoreGrade === '9.5' || scoreGrade === '10') baseReward = 20000;
-      } else if (achGradeLevel === 'Cấp 3') {
-        if (scoreGrade === '8.5') baseReward = 10000;
-        if (scoreGrade === '9' || scoreGrade === '9.5' || scoreGrade === '10') baseReward = 20000;
-      } else if (achGradeLevel === 'Đại học') {
-        if (scoreGrade === '8.5') baseReward = 10000;
-        if (scoreGrade === '9' || scoreGrade === '9.5' || scoreGrade === '10') baseReward = 20000;
-        if (scoreGrade === 'Xuất sắc') baseReward = 100000;
-      }
+      const match = rules.find(
+        r => r.subCategory === 'Điểm số' && 
+        r.category === achGradeLevel && 
+        r.value === scoreGrade
+      );
+      const baseReward = match ? match.rewardAmount : 0;
       return baseReward * scoreQuantity;
     }
 
@@ -762,6 +772,11 @@ export default function App() {
           handleOperationError(err, 'xử lý ảnh minh chứng');
         }
       }
+    };
+    reader.onerror = () => {
+      showToast(lang === 'vi' 
+        ? 'Không thể tải ảnh lên, vui lòng thử lại.' 
+        : 'Cannot upload image, please try again.', 'error');
     };
     reader.readAsDataURL(file);
   };
@@ -1008,6 +1023,11 @@ export default function App() {
           handleOperationError(err, 'xử lý ảnh minh chứng');
         }
       }
+    };
+    reader.onerror = () => {
+      showToast(lang === 'vi' 
+        ? 'Không thể tải ảnh lên, vui lòng thử lại.' 
+        : 'Cannot upload image, please try again.', 'error');
     };
     reader.readAsDataURL(file);
   };
@@ -1471,6 +1491,87 @@ export default function App() {
         } catch (err) {
           console.error(err);
           showToast('Lỗi khi xóa tài khoản.', 'error');
+        }
+      }
+    );
+  };
+
+  // Admin Save Rule (Add or Edit)
+  const handleSaveRule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast(t('Bạn không có quyền thực hiện thao tác này.', 'You do not have permission to perform this operation.'), 'error');
+      return;
+    }
+
+    if (!ruleCategory.trim() || !ruleSubCategory.trim() || !ruleValue.trim()) {
+      showToast(t('Vui lòng điền đầy đủ các thông tin.', 'Please fill in all fields.'), 'error');
+      return;
+    }
+
+    const amt = Number(ruleRewardAmount);
+    if (isNaN(amt) || amt < 0) {
+      showToast(t('Số tiền thưởng không hợp lệ.', 'Invalid reward amount.'), 'error');
+      return;
+    }
+
+    try {
+      if (!navigator.onLine) {
+        throw new Error('network-error');
+      }
+
+      let ruleId = editingRule?.id;
+      if (!ruleId) {
+        const numericIds = rules.map(r => parseInt(r.id)).filter(id => !isNaN(id));
+        const maxId = numericIds.length > 0 ? Math.max(...numericIds) : 0;
+        ruleId = String(maxId + 1);
+      }
+
+      const updatedRule: RewardRule = {
+        id: ruleId,
+        category: ruleCategory.trim(),
+        subCategory: ruleSubCategory.trim(),
+        value: ruleValue.trim(),
+        rewardAmount: amt
+      };
+
+      await setDoc(doc(db, "rules", ruleId), cleanFirestoreData(updatedRule));
+
+      showToast(
+        editingRule 
+          ? t('Đã cập nhật mức thưởng thành công!', 'Updated reward level successfully!') 
+          : t('Đã thêm mức thưởng mới thành công!', 'Added new reward level successfully!'), 
+        'success'
+      );
+      setEditingRule(null);
+      setIsAddingRule(false);
+      await fetchPublicData();
+    } catch (err) {
+      handleOperationError(err, 'lưu mức thưởng');
+    }
+  };
+
+  // Admin Delete Rule
+  const handleDeleteRule = async (rule: RewardRule) => {
+    if (!currentUser || currentUser.role !== 'admin') {
+      showToast(t('Bạn không có quyền thực hiện thao tác này.', 'You do not have permission to perform this operation.'), 'error');
+      return;
+    }
+
+    triggerConfirm(
+      t('Xác nhận xóa mức thưởng', 'Confirm delete reward rule'),
+      t(`Bạn có chắc chắn muốn xóa mức thưởng của "${rule.category} - ${rule.value || rule.subCategory}" không?`, `Are you sure you want to delete the reward rule for "${rule.category} - ${rule.value || rule.subCategory}"?`),
+      t('Xóa', 'Delete'),
+      async () => {
+        try {
+          if (!navigator.onLine) {
+            throw new Error('network-error');
+          }
+          await deleteDoc(doc(db, "rules", rule.id));
+          showToast(t('Đã xóa mức thưởng thành công!', 'Deleted reward rule successfully!'), 'success');
+          await fetchPublicData();
+        } catch (err) {
+          handleOperationError(err, 'xóa mức thưởng');
         }
       }
     );
@@ -2155,18 +2256,15 @@ export default function App() {
                           <select
                             value={scoreGrade}
                             onChange={(e) => setScoreGrade(e.target.value)}
-                            className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white font-bold mt-1"
+                            className="w-full text-xs border border-slate-300 rounded-lg p-2 bg-white font-bold mt-1 dark:bg-slate-800 dark:text-white"
                           >
-                            <option value="9">{t('Điểm 9', 'Grade 9')}</option>
-                            <option value="9.5">{t('Điểm 9.5', 'Grade 9.5')}</option>
-                            <option value="10">{t('Điểm 10', 'Grade 10')}</option>
-                            {achGradeLevel === 'Cấp 3' && <option value="8.5">{t('Điểm 8.5', 'Grade 8.5')}</option>}
-                            {achGradeLevel === 'Đại học' && (
-                              <>
-                                <option value="8.5">{t('Điểm 8.5', 'Grade 8.5')}</option>
-                                <option value="Xuất sắc">{t('Xuất sắc', 'Excellent (A+)')}</option>
-                              </>
-                            )}
+                            {rules
+                              .filter(r => r.subCategory === 'Điểm số' && r.category === achGradeLevel)
+                              .map((r) => (
+                                <option key={r.id} value={r.value}>
+                                  {r.value}
+                                </option>
+                              ))}
                           </select>
                         </div>
                         <div>
@@ -3323,6 +3421,22 @@ export default function App() {
                   </h2>
                   <p className="text-xs text-slate-500 font-medium">{t('Chi tiết cơ chế tính tiền thưởng của Ông Bà cho từng khối cấp học', 'Detailed rewards system set by Grandparents for each academic grade level')}</p>
                 </div>
+                {currentUser?.role === 'admin' && (
+                  <button
+                    onClick={() => {
+                      setIsAddingRule(true);
+                      setEditingRule(null);
+                      setRuleCategory('Cấp 1');
+                      setRuleSubCategory('Điểm số');
+                      setRuleValue('');
+                      setRuleRewardAmount(0);
+                    }}
+                    className="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-3 py-2 rounded-xl text-xs shadow-md cursor-pointer transition-all active:scale-95 shrink-0"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {t('Thêm mức thưởng', 'Add Reward Level')}
+                  </button>
+                )}
               </div>
 
               {/* RULES TABLES VIEW */}
@@ -3340,6 +3454,9 @@ export default function App() {
                           <th className="py-2.5 px-3">{t('Cấp học', 'Level')}</th>
                           <th className="py-2.5 px-3">{t('Điểm số', 'Score')}</th>
                           <th className="py-2.5 px-3 text-right">{t('Mức thưởng', 'Reward amount')}</th>
+                          {currentUser?.role === 'admin' && (
+                            <th className="py-2.5 px-3 text-center w-24">{t('Thao tác', 'Actions')}</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-150">
@@ -3350,6 +3467,33 @@ export default function App() {
                               <td className="py-2.5 px-3 font-bold text-slate-700">{rule.category}</td>
                               <td className="py-2.5 px-3 font-extrabold text-slate-950">{rule.value}</td>
                               <td className="py-2.5 px-3 text-right font-extrabold text-indigo-600">{formatCurrency(rule.rewardAmount)}</td>
+                              {currentUser?.role === 'admin' && (
+                                <td className="py-2.5 px-3 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      onClick={() => {
+                                        setEditingRule(rule);
+                                        setIsAddingRule(false);
+                                        setRuleCategory(rule.category);
+                                        setRuleSubCategory(rule.subCategory);
+                                        setRuleValue(rule.value);
+                                        setRuleRewardAmount(rule.rewardAmount);
+                                      }}
+                                      className="p-1 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/45 rounded-lg transition-colors cursor-pointer"
+                                      title={t('Sửa', 'Edit')}
+                                    >
+                                      <Edit className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteRule(rule)}
+                                      className="p-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/45 rounded-lg transition-colors cursor-pointer"
+                                      title={t('Xóa', 'Delete')}
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              )}
                             </tr>
                           ))}
                       </tbody>
@@ -3369,6 +3513,9 @@ export default function App() {
                           <th className="py-2.5 px-3">{t('Cấp Giải', 'Competition Scope')}</th>
                           <th className="py-2.5 px-3">{t('Hạng Giải', 'Award Rank')}</th>
                           <th className="py-2.5 px-3 text-right">{t('Mức thưởng', 'Reward amount')}</th>
+                          {currentUser?.role === 'admin' && (
+                            <th className="py-2.5 px-3 text-center w-24">{t('Thao tác', 'Actions')}</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-150">
@@ -3379,6 +3526,33 @@ export default function App() {
                               <td className="py-2.5 px-3 font-bold text-slate-700">{rule.category}</td>
                               <td className="py-2.5 px-3 font-extrabold text-slate-950">{rule.subCategory}</td>
                               <td className="py-2.5 px-3 text-right font-extrabold text-indigo-600">{formatCurrency(rule.rewardAmount)}</td>
+                              {currentUser?.role === 'admin' && (
+                                <td className="py-2.5 px-3 text-center">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      onClick={() => {
+                                        setEditingRule(rule);
+                                        setIsAddingRule(false);
+                                        setRuleCategory(rule.category);
+                                        setRuleSubCategory(rule.subCategory);
+                                        setRuleValue(rule.value);
+                                        setRuleRewardAmount(rule.rewardAmount);
+                                      }}
+                                      className="p-1 text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/45 rounded-lg transition-colors cursor-pointer"
+                                      title={t('Sửa', 'Edit')}
+                                    >
+                                      <Edit className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteRule(rule)}
+                                      className="p-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/45 rounded-lg transition-colors cursor-pointer"
+                                      title={t('Xóa', 'Delete')}
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              )}
                             </tr>
                           ))}
                       </tbody>
@@ -4113,6 +4287,173 @@ export default function App() {
                   className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer"
                 >
                   {changePasswordLoading ? t('Đang lưu...', 'Saving...') : t('Lưu mật khẩu', 'Save Passcode')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ADD / EDIT REWARD RULE MODAL */}
+      {(isAddingRule || editingRule) && (
+        <div className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl border border-slate-100 shadow-2xl max-w-md w-full overflow-hidden p-6 space-y-4 dark:bg-slate-900 dark:border-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/50 shrink-0">
+                  <Settings className="h-5 w-5" />
+                </div>
+                <h4 className="text-base font-extrabold text-slate-900 dark:text-white tracking-tight">
+                  {editingRule ? t('Cấu Hình Mức Thưởng', 'Configure Reward Level') : t('Thêm Mức Thưởng Mới', 'Add New Reward Level')}
+                </h4>
+              </div>
+              <button 
+                onClick={() => {
+                  setIsAddingRule(false);
+                  setEditingRule(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 dark:hover:text-slate-300 p-1 rounded-lg transition-all"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRule} className="space-y-4">
+              
+              {/* Type Switcher */}
+              {!editingRule && (
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Loại quy đổi', 'Type')}</label>
+                  <div className="flex gap-2 p-1.5 bg-slate-100/80 dark:bg-slate-800/80 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRuleSubCategory('Điểm số');
+                        setRuleCategory('Cấp 1');
+                        setRuleValue('');
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        ruleSubCategory === 'Điểm số' ? 'bg-white dark:bg-slate-700 shadow-xs text-indigo-600 dark:text-indigo-300 font-extrabold' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {t('Điểm số', 'Grade Score')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRuleSubCategory('Giải nhất');
+                        setRuleCategory('Giải cấp trường');
+                        setRuleValue('Giải nhất');
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        ruleSubCategory !== 'Điểm số' ? 'bg-white dark:bg-slate-700 shadow-xs text-indigo-600 dark:text-indigo-300 font-extrabold' : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
+                      }`}
+                    >
+                      {t('Giải thưởng/Kỳ thi', 'Contest / Award')}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Category (Cấp học / Cấp giải) */}
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  {ruleSubCategory === 'Điểm số' ? t('Khối học áp dụng', 'Target Grade Level') : t('Phạm vi cuộc thi', 'Competition Scope')}
+                </label>
+                {ruleSubCategory === 'Điểm số' ? (
+                  <select
+                    value={ruleCategory}
+                    onChange={(e) => setRuleCategory(e.target.value)}
+                    className="w-full text-xs border border-slate-300 dark:border-slate-700 rounded-xl p-3 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold"
+                  >
+                    <option value="Cấp 1">{t('Cấp 1', 'Primary (Grade 1-5)')}</option>
+                    <option value="Cấp 2">{t('Cấp 2', 'Secondary (Grade 6-9)')}</option>
+                    <option value="Cấp 3">{t('Cấp 3', 'High School (Grade 10-12)')}</option>
+                    <option value="Đại học">{t('Đại học', 'University / College')}</option>
+                  </select>
+                ) : (
+                  <select
+                    value={ruleCategory}
+                    onChange={(e) => setRuleCategory(e.target.value)}
+                    className="w-full text-xs border border-slate-300 dark:border-slate-700 rounded-xl p-3 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold"
+                  >
+                    <option value="Giải cấp trường">{t('Giải cấp trường', 'School Level')}</option>
+                    <option value="Giải cấp phường">{t('Giải cấp phường', 'District/Ward Level')}</option>
+                    <option value="Giải cấp thành phố">{t('Giải cấp thành phố', 'City/State Level')}</option>
+                    <option value="Giải quốc tế">{t('Giải quốc tế', 'National / International')}</option>
+                  </select>
+                )}
+              </div>
+
+              {/* SubCategory if Contest (Hạng giải) */}
+              {ruleSubCategory !== 'Điểm số' && (
+                <div className="space-y-1">
+                  <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Hạng giải thưởng', 'Award Rank')}</label>
+                  <select
+                    value={ruleSubCategory}
+                    onChange={(e) => {
+                      setRuleSubCategory(e.target.value);
+                      if (!editingRule) {
+                        setRuleValue(e.target.value);
+                      }
+                    }}
+                    className="w-full text-xs border border-slate-300 dark:border-slate-700 rounded-xl p-3 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold"
+                  >
+                    <option value="Giải nhất">{t('Giải nhất', 'First Place')}</option>
+                    <option value="Giải nhì">{t('Giải nhì', 'Second Place')}</option>
+                    <option value="Giải ba">{t('Giải ba', 'Third Place')}</option>
+                    <option value="Giải khuyến khích">{t('Giải khuyến khích', 'Consolation Prize')}</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Exact Value Display/Input */}
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  {ruleSubCategory === 'Điểm số' ? t('Giá trị Điểm Số (VD: Điểm 9.5)', 'Score Value (e.g. Điểm 9.5)') : t('Tên nhãn hiển thị giải (VD: Giải nhất (TIMO...))', 'Display Label (e.g. Giải nhất...)')}
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={ruleValue}
+                  onChange={(e) => setRuleValue(e.target.value)}
+                  placeholder={ruleSubCategory === 'Điểm số' ? "Ví dụ: 'Điểm 9.5', 'Điểm 10', 'Xuất sắc'" : "Ví dụ: 'Giải nhất', 'Giải nhất (TIMO/ITMC...)'"}
+                  className="w-full text-xs border border-slate-300 dark:border-slate-700 rounded-xl p-3 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold"
+                />
+              </div>
+
+              {/* Reward Amount */}
+              <div className="space-y-1">
+                <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">{t('Số tiền thưởng quy đổi (đ)', 'Reward Amount (VND)')}</label>
+                <input
+                  type="number"
+                  required
+                  min="0"
+                  step="1000"
+                  value={ruleRewardAmount}
+                  onChange={(e) => setRuleRewardAmount(Number(e.target.value))}
+                  placeholder="Ví dụ: 20000"
+                  className="w-full text-xs border border-slate-300 dark:border-slate-700 rounded-xl p-3 bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-bold"
+                />
+              </div>
+
+              {/* Modal Buttons */}
+              <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddingRule(false);
+                    setEditingRule(null);
+                  }}
+                  className="px-4 py-2.5 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                >
+                  {t('Hủy bỏ', 'Cancel')}
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer"
+                >
+                  {t('Lưu lại', 'Save Rule')}
                 </button>
               </div>
             </form>

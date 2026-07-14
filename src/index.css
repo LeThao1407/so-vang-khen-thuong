@@ -57,6 +57,19 @@
     border-color: rgba(255, 255, 255, 0.1) !important;
   }
 
+  /* Correcting element patterns where slate-950 text was converted to dark */
+  & .text-slate-950 {
+    color: #ffffff !important;
+  }
+  & .bg-amber-400 .text-slate-950,
+  & .bg-amber-400.text-slate-950,
+  & .bg-amber-500 .text-slate-950,
+  & .bg-amber-500.text-slate-950,
+  & .bg-yellow-400 .text-slate-950,
+  & .bg-yellow-400.text-slate-950 {
+    color: #020617 !important; /* Keep dark inside gold/amber badges */
+  }
+
   /* Target buttons and elements that are supposed to remain dark in dark mode */
   & .bg-slate-900 {
     background-color: #1e293b !important;
