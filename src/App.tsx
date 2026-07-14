@@ -53,6 +53,94 @@ import type {
   AchievementRequest, 
   RewardRule 
 } from './types';
+import { 
+  collection, 
+  getDocs, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  query, 
+  where
+} from "firebase/firestore";
+import { db } from "./firebase/firebase";
+
+// Helper to generate IDs
+const generateId = () => Math.random().toString(36).substring(2, 11);
+
+// Helper to remove diacritics/accents from Vietnamese text
+function removeDiacritics(str: string): string {
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
+// Canvas-based image compression helper (downscales image and converts to JPEG at 0.7 quality)
+function compressImage(base64Str: string, maxWidth = 1024, maxQuality = 0.7): Promise<string> {
+  return new Promise((resolve) => {
+    // If it's not a base64 image string, resolve with original
+    if (!base64Str || !base64Str.startsWith('data:image/')) {
+      resolve(base64Str);
+      return;
+    }
+    const img = new Image();
+    img.src = base64Str;
+    img.onload = () => {
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxWidth || height > maxWidth) {
+        if (width > height) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        } else {
+          width = Math.round((width * maxWidth) / height);
+          height = maxWidth;
+        }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(base64Str);
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0, width, height);
+      const compressedDataUrl = canvas.toDataURL('image/jpeg', maxQuality);
+      resolve(compressedDataUrl);
+    };
+    img.onerror = () => {
+      resolve(base64Str); // Fallback to original
+    };
+  });
+}
+
+// Firestore does not allow undefined fields, so we use this helper
+function cleanFirestoreData(obj: any): any {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(cleanFirestoreData);
+  }
+  const cleaned: any = {};
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      const val = obj[key];
+      if (val !== undefined) {
+        cleaned[key] = cleanFirestoreData(val);
+      }
+    }
+  }
+  return cleaned;
+}
 
 export default function App() {
   // Authentication & session state
@@ -198,6 +286,37 @@ export default function App() {
     }, 4500);
   };
 
+  const handleOperationError = (err: any, actionName: string) => {
+    console.error(`Error during ${actionName}:`, err);
+    if (!navigator.onLine) {
+      showToast(t('Mất kết nối mạng. Vui lòng kiểm tra kết nối internet và thử lại.', 'Network connection lost. Please check your internet connection and try again.'), 'error');
+      return;
+    }
+    
+    let msg = '';
+    const errCode = err?.code;
+    const errMsg = err?.message || '';
+
+    if (errCode === 'permission-denied' || errMsg.includes('permission') || errMsg.includes('Permission')) {
+      msg = t('Bạn không có quyền thực hiện thao tác này. Vui lòng kiểm tra lại tài khoản hoặc đăng nhập lại.', 
+              'You do not have permission to perform this operation. Please check your account or log in again.');
+    } else if (errCode === 'unavailable' || errMsg.includes('unavailable') || errMsg.includes('network')) {
+      msg = t('Máy chủ cơ sở dữ liệu không phản hồi hoặc mất kết nối. Vui lòng thử lại sau.', 
+              'The database server is not responding or connection lost. Please try again later.');
+    } else if (errCode === 'resource-exhausted' || errMsg.includes('exceeds the maximum allowed size') || errMsg.includes('too large') || errMsg.includes('limit')) {
+      msg = t('Ảnh minh chứng vượt quá giới hạn 1MB. Vui lòng chọn ảnh nhỏ hơn.', 
+              'Proof image exceeds the 1MB limit. Please select a smaller image.');
+    } else if (errCode === 'unauthenticated') {
+      msg = t('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.', 'Your session has expired. Please log in again.');
+    } else if (errCode) {
+      msg = t(`Lỗi Firebase (${errCode}): ${errMsg}`, `Firebase Error (${errCode}): ${errMsg}`);
+    } else {
+      msg = t(`Lỗi khi ${actionName}: ${errMsg || 'Không rõ nguyên nhân'}`, `Error during ${actionName}: ${errMsg || 'Unknown error'}`);
+    }
+
+    showToast(msg, 'error');
+  };
+
   const triggerConfirm = (title: string, message: string, confirmText: string, onConfirm: () => void) => {
     setConfirmDialog({
       isOpen: true,
@@ -217,54 +336,128 @@ export default function App() {
   // Load public and initial data
   const fetchPublicData = async () => {
     try {
-      const res = await fetch('/api/leaderboard');
-      const data = await res.json();
-      if (data.leaderboard) {
-        setLeaderboard(data.leaderboard);
-      }
+      // 1. Leaderboard: users + achievements + payouts
+      const [usersSnap, achievementsSnap, payoutsSnap] = await Promise.all([
+        getDocs(collection(db, "users")),
+        getDocs(collection(db, "achievements")),
+        getDocs(collection(db, "payouts"))
+      ]);
+      const users = usersSnap.docs.map(doc => doc.data() as User);
+      const achievements = achievementsSnap.docs.map(doc => doc.data() as Achievement);
+      const payouts = payoutsSnap.docs.map(doc => doc.data() as Payout);
 
-      const rulesRes = await fetch('/api/rules');
-      const rulesData = await rulesRes.json();
-      if (rulesData.rules) {
-        setRules(rulesData.rules);
-      }
+      const children = users.filter(u => u.role === 'user');
+      const leaderboardData = children.map(child => {
+        const childAchievements = achievements.filter(a => a.userId === child.id);
+        const childPayouts = payouts.filter(p => p.userId === child.id);
+
+        const totalReward = childAchievements.reduce((sum, a) => sum + (a.reward || 0), 0);
+        const totalReceived = childPayouts.reduce((sum, p) => sum + (p.amount || 0), 0);
+        const remainingBalance = totalReward - totalReceived;
+
+        const achievementsCount = childAchievements.length;
+
+        const rewards2025 = childAchievements
+          .filter(a => a.date && a.date.startsWith('2025'))
+          .reduce((sum, a) => sum + (a.reward || 0), 0);
+
+        const rewards2026 = childAchievements
+          .filter(a => a.date && a.date.startsWith('2026'))
+          .reduce((sum, a) => sum + (a.reward || 0), 0);
+
+        return {
+          id: child.id,
+          name: child.name,
+          nickname: child.nickname,
+          gradeLevel: child.gradeLevel,
+          totalReward,
+          totalReceived,
+          remainingBalance,
+          achievementsCount,
+          rewards2025,
+          rewards2026,
+        };
+      });
+      setLeaderboard(leaderboardData);
+
+      // 2. Rules
+      const rulesSnap = await getDocs(collection(db, "rules"));
+      const rulesData = rulesSnap.docs.map(doc => doc.data() as RewardRule);
+      rulesData.sort((a, b) => {
+        const idA = parseInt(a.id) || 0;
+        const idB = parseInt(b.id) || 0;
+        return idA - idB;
+      });
+      setRules(rulesData);
     } catch (err) {
       console.error('Error fetching public data:', err);
     }
   };
 
   // Fetch private/authenticated data
-  const fetchPrivateData = async (authToken: string) => {
+  const fetchPrivateData = async (authToken: string, customUser?: User) => {
     try {
-      const headers = { 'Authorization': `Bearer ${authToken}` };
+      const activeUser = customUser || currentUser;
+      if (!activeUser) return;
+
+      const isUserAdmin = activeUser.role === 'admin';
       
-      const achRes = await fetch('/api/achievements', { headers });
-      const achData = await achRes.json();
-      if (achData.achievements) {
-        setAchievements(achData.achievements);
+      // 1. Achievements
+      let achievementsData: Achievement[] = [];
+      if (isUserAdmin) {
+        const snap = await getDocs(collection(db, "achievements"));
+        achievementsData = snap.docs.map(d => d.data() as Achievement);
+      } else {
+        const q = query(collection(db, "achievements"), where("userId", "==", activeUser.id));
+        const snap = await getDocs(q);
+        achievementsData = snap.docs.map(d => d.data() as Achievement);
       }
+      achievementsData.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
+      setAchievements(achievementsData);
 
-      const payRes = await fetch('/api/payouts', { headers });
-      const payData = await payRes.json();
-      if (payData.payouts) {
-        setPayouts(payData.payouts);
+      // 2. Payouts
+      let payoutsData: Payout[] = [];
+      if (isUserAdmin) {
+        const snap = await getDocs(collection(db, "payouts"));
+        payoutsData = snap.docs.map(d => d.data() as Payout);
+      } else {
+        const q = query(collection(db, "payouts"), where("userId", "==", activeUser.id));
+        const snap = await getDocs(q);
+        payoutsData = snap.docs.map(d => d.data() as Payout);
       }
+      payoutsData.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
+      setPayouts(payoutsData);
 
-      const reqRes = await fetch('/api/requests', { headers });
-      const reqData = await reqRes.json();
-      if (reqData.requests) {
-        setRequests(reqData.requests);
+      // 3. Requests
+      let requestsData: AchievementRequest[] = [];
+      if (isUserAdmin) {
+        const snap = await getDocs(collection(db, "requests"));
+        requestsData = snap.docs.map(d => d.data() as AchievementRequest);
+      } else {
+        const q = query(collection(db, "requests"), where("userId", "==", activeUser.id));
+        const snap = await getDocs(q);
+        requestsData = snap.docs.map(d => d.data() as AchievementRequest);
       }
+      requestsData.sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
+      setRequests(requestsData);
 
-      // If user is admin, also fetch the full user list
-      const meRes = await fetch('/api/me', { headers });
-      const meData = await meRes.json();
-      if (meData.user && meData.user.role === 'admin') {
-        const usersRes = await fetch('/api/admin/users', { headers });
-        const usersData = await usersRes.json();
-        if (usersData.users) {
-          setAllUsers(usersData.users);
-        }
+      // 4. All Users if admin
+      if (isUserAdmin) {
+        const snap = await getDocs(collection(db, "users"));
+        const usersData = snap.docs.map(d => d.data() as User);
+        setAllUsers(usersData);
       }
     } catch (err) {
       console.error('Error fetching private data:', err);
@@ -279,14 +472,12 @@ export default function App() {
 
       if (token) {
         try {
-          const res = await fetch('/api/me', {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          const data = await res.json();
-          if (data.user) {
-            setCurrentUser(data.user);
-            await fetchPrivateData(token);
-            if (data.user.role === 'admin') {
+          const userDocSnap = await getDoc(doc(db, "users", token));
+          if (userDocSnap.exists()) {
+            const userData = userDocSnap.data() as User;
+            setCurrentUser(userData);
+            await fetchPrivateData(token, userData);
+            if (userData.role === 'admin') {
               setActiveTab('admin');
             } else {
               setActiveTab('personal');
@@ -295,11 +486,13 @@ export default function App() {
             // Bad session
             localStorage.removeItem('token');
             setToken(null);
+            setCurrentUser(null);
           }
         } catch (e) {
           console.error(e);
           localStorage.removeItem('token');
           setToken(null);
+          setCurrentUser(null);
         }
       }
       setLoading(false);
@@ -331,42 +524,91 @@ export default function App() {
     e.preventDefault();
     setLoginError('');
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: loginUsername, password: loginPassword })
-      });
-      const data = await res.json();
-      if (data.error) {
-        setLoginError(data.error);
+      if (!loginUsername || !loginPassword) {
+        setLoginError('Vui lòng cung cấp tên đăng nhập và mật khẩu');
         return;
       }
 
-      localStorage.setItem('token', data.token);
-      setToken(data.token);
-      setCurrentUser(data.user);
+      const inputStr = loginUsername.trim();
+      const normalizedInput = removeDiacritics(inputStr).replace(/\s+/g, '');
+
+      // Read users from Firestore directly
+      const snapshot = await getDocs(collection(db, "users"));
+      const users = snapshot.docs.map(doc => doc.data() as User & { password?: string });
+
+      const matchedUser = users.find(u => {
+        const unaccentedName = removeDiacritics(u.name || '').replace(/\s+/g, '');
+        const unaccentedNickname = removeDiacritics(u.nickname || '').replace(/\s+/g, '');
+        const lowercaseUsername = (u.username || '').toLowerCase();
+        
+        if (u.role === 'admin') {
+          if (
+            normalizedInput.includes('admin') || 
+            normalizedInput.includes('ongba') || 
+            normalizedInput.includes('quantri')
+          ) {
+            return true;
+          }
+        }
+
+        return (
+          unaccentedName === normalizedInput ||
+          unaccentedNickname === normalizedInput ||
+          lowercaseUsername === normalizedInput ||
+          (u.name || '').toLowerCase() === inputStr.toLowerCase() ||
+          (u.nickname || '').toLowerCase() === inputStr.toLowerCase() ||
+          normalizedInput.includes(unaccentedName) ||
+          unaccentedName.includes(normalizedInput)
+        );
+      });
+
+      if (!matchedUser) {
+        setLoginError('Không tìm thấy thành viên gia đình này. Vui lòng nhập đúng họ tên thật hoặc biệt danh!');
+        return;
+      }
+
+      let allowedPasswords: string[];
+      if (matchedUser.password) {
+        allowedPasswords = [matchedUser.password];
+      } else {
+        allowedPasswords = [
+          '123',
+          'giadinh123',
+          `${(matchedUser.username || '').toLowerCase()}123`,
+          `${removeDiacritics(matchedUser.nickname || '').replace(/\s+/g, '')}123`,
+          `${removeDiacritics(matchedUser.name || '').replace(/\s+/g, '')}123`
+        ];
+      }
+
+      if (!allowedPasswords.includes(loginPassword.trim())) {
+        const errorMsg = matchedUser.password
+          ? 'Mật khẩu chưa chính xác. Hãy nhập đúng mật khẩu mới bạn đã đặt!'
+          : 'Mật khẩu chưa chính xác. Gợi ý: Bạn có thể nhập mật khẩu mặc định 123!';
+        setLoginError(errorMsg);
+        return;
+      }
+
+      const userToken = matchedUser.id; // Using userId as a simple token
+      localStorage.setItem('token', userToken);
+      setToken(userToken);
+      setCurrentUser(matchedUser);
       setShowLoginModal(false);
       setLoginUsername('');
       setLoginPassword('');
       
-      if (data.user.role === 'admin') {
+      if (matchedUser.role === 'admin') {
         setActiveTab('admin');
       } else {
         setActiveTab('personal');
       }
     } catch (err) {
+      console.error(err);
       setLoginError('Không thể kết nối đến máy chủ.');
     }
   };
 
   // Handle Log Out
   const handleLogout = async () => {
-    if (token) {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-    }
     localStorage.removeItem('token');
     setToken(null);
     setCurrentUser(null);
@@ -380,6 +622,7 @@ export default function App() {
   // Handle Change Password
   const handleChangePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser) return;
     if (!changePasswordNew.trim()) {
       showToast(t('Vui lòng nhập mật khẩu mới.', 'Please enter new password.'), 'error');
       return;
@@ -391,29 +634,16 @@ export default function App() {
 
     setChangePasswordLoading(true);
     try {
-      const res = await fetch('/api/auth/change-password', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ newPassword: changePasswordNew.trim() })
-      });
-      const data = await res.json();
+      const userRef = doc(db, "users", currentUser.id);
+      await updateDoc(userRef, { password: changePasswordNew.trim() });
       setChangePasswordLoading(false);
-      
-      if (data.error) {
-        showToast(data.error, 'error');
-        return;
-      }
-
       showToast(t('Đổi mật khẩu thành công!', 'Changed password successfully!'), 'success');
-      setShowChangePasswordModal(false);
       setChangePasswordNew('');
       setChangePasswordConfirm('');
+      setShowChangePasswordModal(false);
     } catch (err) {
       setChangePasswordLoading(false);
-      showToast(t('Có lỗi xảy ra khi đổi mật khẩu.', 'Error occurred changing password.'), 'error');
+      showToast(t('Có lỗi xảy ra khi đổi mật khẩu.', 'Error changing password.'), 'error');
     }
   };
 
@@ -508,17 +738,29 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      alert(lang === 'vi' 
-        ? 'Ảnh quá lớn. Vui lòng chọn ảnh nhỏ hơn 10MB.' 
-        : 'Image is too large. Please select a file smaller than 10MB.');
+    if (!file.type.startsWith('image/')) {
+      showToast(lang === 'vi' 
+        ? 'Sai định dạng ảnh. Vui lòng chọn tệp tin hình ảnh (jpg, png, webp...)' 
+        : 'Invalid image format. Please select an image file (jpg, png, webp...)', 'error');
+      return;
+    }
+
+    if (file.size > 1 * 1024 * 1024) {
+      showToast(lang === 'vi' 
+        ? 'Ảnh minh chứng vượt quá giới hạn 1MB. Vui lòng chọn ảnh nhỏ hơn.' 
+        : 'Proof image exceeds the 1MB limit. Please select a smaller image.', 'error');
       return;
     }
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       if (event.target?.result) {
-        setProofImage(event.target.result as string);
+        try {
+          const compressed = await compressImage(event.target.result as string);
+          setProofImage(compressed);
+        } catch (err) {
+          handleOperationError(err, 'xử lý ảnh minh chứng');
+        }
       }
     };
     reader.readAsDataURL(file);
@@ -528,9 +770,12 @@ export default function App() {
     setProofImage(null);
   };
 
-  // Submit Achievement Request
   const handleAddRequest = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser) {
+      showToast(t('Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.', 'You are not logged in or your session has expired. Please log in again.'), 'error');
+      return;
+    }
     setAchFormError('');
     setAchFormSuccess('');
 
@@ -540,30 +785,34 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/requests', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          type: 'add',
-          data: {
-            date: achDate,
-            description: achDescription,
-            category: achCategory,
-            reward: calculatedReward,
-            proofImage: proofImage
-          }
-        })
-      });
-      const data = await res.json();
-      if (data.error) {
-        setAchFormError(data.error);
-        return;
+      if (!navigator.onLine) {
+        throw new Error('network-error');
       }
 
+      const newId = `req_${generateId()}`;
+      const newRequest: AchievementRequest = {
+        id: newId,
+        userId: currentUser.id,
+        type: 'add',
+        data: cleanFirestoreData({
+          date: achDate,
+          description: achDescription,
+          category: achCategory,
+          reward: calculatedReward,
+          proofImage: proofImage || undefined
+        }),
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      };
+
+      if (proofImage) {
+        newRequest.proofImage = proofImage;
+      }
+
+      await setDoc(doc(db, "requests", newId), cleanFirestoreData(newRequest));
+
       setAchFormSuccess('Yêu cầu thêm thành tích đã được gửi đi kèm minh chứng! Vui lòng chờ Ông Bà duyệt.');
+      showToast(t('Yêu cầu của bạn đã được gửi thành công!', 'Your request has been submitted successfully!'), 'success');
       setAchDescription('');
       setProofImage(null);
       setScoreQuantity(1);
@@ -571,47 +820,50 @@ export default function App() {
         await fetchPrivateData(token);
       }
     } catch (err) {
-      setAchFormError('Có lỗi xảy ra khi gửi yêu cầu.');
+      handleOperationError(err, 'gửi yêu cầu duyệt');
+      setAchFormError(t('Có lỗi xảy ra khi gửi yêu cầu.', 'An error occurred while submitting the request.'));
     }
   };
 
   // Submit Delete/Update Request for Users
   const handleRequestActionOnAchievement = async (type: 'update' | 'delete', ach: Achievement) => {
+    if (!currentUser) {
+      showToast(t('Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.', 'You are not logged in or your session has expired. Please log in again.'), 'error');
+      return;
+    }
     triggerConfirm(
       type === 'delete' ? 'Yêu cầu xoá thành tích' : 'Yêu cầu sửa thành tích',
       `Bạn có chắc chắn muốn gửi yêu cầu ${type === 'delete' ? 'XOÁ' : 'SỬA'} thành tích "${ach.description}" của bạn không?`,
       'Gửi Yêu Cầu',
       async () => {
         try {
-          const res = await fetch('/api/requests', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-              type,
-              achievementId: ach.id,
-              data: {
-                date: ach.date,
-                description: ach.description,
-                category: ach.category,
-                reward: ach.reward
-              }
-            })
-          });
-          const data = await res.json();
-          if (data.error) {
-            showToast(data.error, 'error');
-            return;
+          if (!navigator.onLine) {
+            throw new Error('network-error');
           }
+          const newId = `req_${generateId()}`;
+          const newRequest: AchievementRequest = {
+            id: newId,
+            userId: currentUser.id,
+            type,
+            achievementId: ach.id,
+            data: cleanFirestoreData({
+              date: ach.date,
+              description: ach.description,
+              category: ach.category,
+              reward: ach.reward
+            }),
+            status: 'pending',
+            createdAt: new Date().toISOString()
+          };
+
+          await setDoc(doc(db, "requests", newId), cleanFirestoreData(newRequest));
 
           showToast('Yêu cầu đã được gửi thành công đến Ông Bà để xem xét!', 'success');
           if (token) {
             await fetchPrivateData(token);
           }
         } catch (err) {
-          showToast('Có lỗi xảy ra khi gửi yêu cầu.', 'error');
+          handleOperationError(err, type === 'delete' ? 'gửi yêu cầu xoá thành tích' : 'gửi yêu cầu sửa thành tích');
         }
       }
     );
@@ -643,17 +895,10 @@ export default function App() {
       btnText,
       async () => {
         try {
-          const res = await fetch(`/api/requests/${id}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          });
-          const data = await res.json();
-          if (data.error) {
-            showToast(data.error, 'error');
-            return;
+          if (!navigator.onLine) {
+            throw new Error('network-error');
           }
+          await deleteDoc(doc(db, "requests", id));
 
           let successToast = t('Đã xóa yêu cầu khỏi danh sách!', 'Request dismissed!');
           if (status === 'pending') {
@@ -666,7 +911,7 @@ export default function App() {
             await fetchPrivateData(token);
           }
         } catch (err) {
-          showToast(t('Có lỗi xảy ra khi xóa yêu cầu.', 'Error deleting request.'), 'error');
+          handleOperationError(err, 'xóa hoặc hủy yêu cầu');
         }
       }
     );
@@ -739,17 +984,29 @@ export default function App() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 10 * 1024 * 1024) {
-      alert(lang === 'vi' 
-        ? 'Ảnh quá lớn. Vui lòng chọn ảnh nhỏ hơn 10MB.' 
-        : 'Image is too large. Please select a file smaller than 10MB.');
+    if (!file.type.startsWith('image/')) {
+      showToast(lang === 'vi' 
+        ? 'Sai định dạng ảnh. Vui lòng chọn tệp tin hình ảnh (jpg, png, webp...)' 
+        : 'Invalid image format. Please select an image file (jpg, png, webp...)', 'error');
+      return;
+    }
+
+    if (file.size > 1 * 1024 * 1024) {
+      showToast(lang === 'vi' 
+        ? 'Ảnh minh chứng vượt quá giới hạn 1MB. Vui lòng chọn ảnh nhỏ hơn.' 
+        : 'Proof image exceeds the 1MB limit. Please select a smaller image.', 'error');
       return;
     }
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       if (event.target?.result) {
-        setEditReqProofImage(event.target.result as string);
+        try {
+          const compressed = await compressImage(event.target.result as string);
+          setEditReqProofImage(compressed);
+        } catch (err) {
+          handleOperationError(err, 'xử lý ảnh minh chứng');
+        }
       }
     };
     reader.readAsDataURL(file);
@@ -762,6 +1019,10 @@ export default function App() {
   const handleUpdatePendingRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingRequest) return;
+    if (!currentUser) {
+      showToast(t('Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.', 'You are not logged in or your session has expired. Please log in again.'), 'error');
+      return;
+    }
 
     if (!editReqDescription.trim()) {
       showToast(t('Vui lòng nhập mô tả thành tích', 'Please enter achievement description'), 'error');
@@ -769,28 +1030,44 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`/api/requests/${editingRequest.id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          data: {
-            description: editReqDescription,
-            category: editReqCategory,
-            date: editReqDate,
-            reward: Number(editReqReward),
-            proofImage: editReqProofImage
-          }
-        })
-      });
+      if (!navigator.onLine) {
+        throw new Error('network-error');
+      }
 
-      const data = await res.json();
-      if (data.error) {
-        showToast(data.error, 'error');
+      const reqRef = doc(db, "requests", editingRequest.id);
+      const reqSnap = await getDoc(reqRef);
+      if (!reqSnap.exists()) {
+        showToast(t('Không tìm thấy yêu cầu', 'Request not found'), 'error');
         return;
       }
+
+      const request = reqSnap.data() as AchievementRequest;
+      
+      // Verify session user still exists in Firestore
+      const userRef = doc(db, "users", currentUser.id);
+      const userSnap = await getDoc(userRef);
+      if (!userSnap.exists()) {
+        showToast(t('Phiên đăng nhập đã hết hạn hoặc tài khoản không tồn tại. Vui lòng đăng nhập lại.', 'Session has expired or account does not exist. Please log in again.'), 'error');
+        handleLogout();
+        return;
+      }
+
+      const requestData = request.data || {};
+      const updatedData = cleanFirestoreData({
+        date: editReqDate || requestData.date,
+        description: editReqDescription || requestData.description,
+        category: editReqCategory || requestData.category,
+        reward: (editReqReward !== undefined && !isNaN(Number(editReqReward))) ? Number(editReqReward) : requestData.reward,
+        proofImage: editReqProofImage !== undefined ? editReqProofImage : requestData.proofImage
+      });
+
+      const updatedRequest = {
+        ...request,
+        data: updatedData,
+        proofImage: editReqProofImage !== undefined ? editReqProofImage : request.proofImage
+      };
+
+      await setDoc(reqRef, cleanFirestoreData(updatedRequest));
 
       showToast(t('Đã cập nhật yêu cầu thành công!', 'Request updated successfully!'), 'success');
       setEditingRequest(null);
@@ -798,7 +1075,7 @@ export default function App() {
         await fetchPrivateData(token);
       }
     } catch (err) {
-      showToast(t('Có lỗi xảy ra khi cập nhật yêu cầu.', 'Error updating request.'), 'error');
+      handleOperationError(err, 'cập nhật yêu cầu');
     }
   };
 
@@ -806,21 +1083,72 @@ export default function App() {
   const handleProcessRequest = async (id: string, status: 'approve' | 'reject') => {
     const note = adminNotes[id] || (status === 'approve' ? 'Đã phê duyệt' : 'Không phê duyệt');
     const reqObj = requests.find(r => r.id === id);
-    const reqType = reqObj?.type || 'add';
+    if (!reqObj) {
+      showToast('Không tìm thấy yêu cầu này.', 'error');
+      return;
+    }
+    const reqType = reqObj.type || 'add';
     try {
-      const res = await fetch(`/api/requests/${id}/${status}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ adminNote: note })
-      });
-      const data = await res.json();
-      if (data.error) {
-        showToast(data.error, 'error');
+      const reqRef = doc(db, "requests", id);
+      const reqSnap = await getDoc(reqRef);
+      if (!reqSnap.exists()) {
+        showToast('Không tìm thấy yêu cầu trong Firestore.', 'error');
         return;
       }
+      const request = reqSnap.data() as AchievementRequest;
+
+      if (request.status !== 'pending') {
+        showToast('Yêu cầu đã được xử lý từ trước.', 'error');
+        return;
+      }
+
+      if (status === 'approve') {
+        if (reqType === 'add') {
+          const newAchId = `ach_${generateId()}`;
+          const newAchievement: Achievement = {
+            id: newAchId,
+            userId: request.userId,
+            date: request.data?.date,
+            description: request.data?.description,
+            category: request.data?.category as any,
+            reward: Number(request.data?.reward || 0),
+            approvedBy: 'admin',
+            createdAt: new Date().toISOString()
+          };
+
+          const proofImageVal = request.data?.proofImage || request.proofImage;
+          if (proofImageVal !== undefined) {
+            newAchievement.proofImage = proofImageVal;
+          }
+
+          await setDoc(doc(db, "achievements", newAchId), cleanFirestoreData(newAchievement));
+        } else if (reqType === 'update' && request.achievementId) {
+          const achRef = doc(db, "achievements", request.achievementId);
+          const achSnap = await getDoc(achRef);
+          if (achSnap.exists()) {
+            const currentAch = achSnap.data() as Achievement;
+            const updatedAchievement = {
+              ...currentAch,
+              date: request.data?.date || currentAch.date,
+              description: request.data?.description || currentAch.description,
+              category: (request.data?.category || currentAch.category) as any,
+              reward: request.data?.reward !== undefined ? Number(request.data.reward) : currentAch.reward,
+              proofImage: request.data?.proofImage || request.proofImage || currentAch.proofImage
+            };
+            await setDoc(achRef, cleanFirestoreData(updatedAchievement));
+          }
+        } else if (reqType === 'delete' && request.achievementId) {
+          await deleteDoc(doc(db, "achievements", request.achievementId));
+        }
+        
+        request.status = 'approved';
+        request.adminNote = note || 'Đã phê duyệt';
+      } else {
+        request.status = 'rejected';
+        request.adminNote = note || 'Từ chối bởi quản trị viên';
+      }
+
+      await setDoc(reqRef, cleanFirestoreData(request));
 
       let successMsg = 'Đã từ chối yêu cầu.';
       if (status === 'approve') {
@@ -847,13 +1175,16 @@ export default function App() {
       }
       await fetchPublicData();
     } catch (err) {
-      showToast('Có lỗi xảy ra khi xử lý yêu cầu.', 'error');
+      handleOperationError(err, 'xử lý yêu cầu');
     }
   };
 
-  // Admin Payout submission
   const handleAddPayout = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!currentUser) {
+      showToast(t('Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.', 'You are not logged in or your session has expired. Please log in again.'), 'error');
+      return;
+    }
     setPayoutError('');
     setPayoutSuccess('');
 
@@ -872,26 +1203,24 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/payouts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          userId: payoutUser,
-          date: payoutDate,
-          description: payoutDesc,
-          amount: amt
-        })
-      });
-      const data = await res.json();
-      if (data.error) {
-        setPayoutError(data.error);
-        return;
+      if (!navigator.onLine) {
+        throw new Error('network-error');
       }
 
+      const newId = `pay_${generateId()}`;
+      const newPayout: Payout = {
+        id: newId,
+        userId: payoutUser,
+        date: payoutDate,
+        description: payoutDesc,
+        amount: amt,
+        createdAt: new Date().toISOString()
+      };
+
+      await setDoc(doc(db, "payouts", newId), cleanFirestoreData(newPayout));
+
       setPayoutSuccess('Ghi nhận phát tiền thưởng thành công!');
+      showToast(t('Ghi nhận phát tiền thưởng thành công!', 'Payout recorded successfully!'), 'success');
       setPayoutAmount('');
       setPayoutDesc('');
       setPayoutUser('');
@@ -901,7 +1230,8 @@ export default function App() {
       }
       await fetchPublicData();
     } catch (err) {
-      setPayoutError('Lỗi kết nối máy chủ.');
+      handleOperationError(err, 'ghi nhận phát thưởng');
+      setPayoutError(t('Có lỗi xảy ra khi ghi nhận phát thưởng.', 'An error occurred while recording the payout.'));
     }
   };
 
@@ -914,25 +1244,19 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/achievements', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          userId: adminAchUser,
-          date: adminAchDate,
-          description: adminAchDesc,
-          category: adminAchCat,
-          reward: Number(adminAchReward)
-        })
-      });
-      const data = await res.json();
-      if (data.error) {
-        showToast(data.error, 'error');
-        return;
-      }
+      const newId = `ach_${generateId()}`;
+      const newAchievement: Achievement = {
+        id: newId,
+        userId: adminAchUser,
+        date: adminAchDate,
+        description: adminAchDesc,
+        category: adminAchCat as any,
+        reward: Number(adminAchReward),
+        approvedBy: 'admin',
+        createdAt: new Date().toISOString()
+      };
+
+      await setDoc(doc(db, "achievements", newId), cleanFirestoreData(newAchievement));
 
       showToast('Đã thêm trực tiếp thành tích mới cho cháu!', 'success');
       setAdminAchDesc('');
@@ -941,6 +1265,7 @@ export default function App() {
       }
       await fetchPublicData();
     } catch (err) {
+      console.error(err);
       showToast('Có lỗi xảy ra khi tạo thành tích.', 'error');
     }
   };
@@ -953,15 +1278,7 @@ export default function App() {
       'Đồng ý Xoá',
       async () => {
         try {
-          const res = await fetch(`/api/achievements/${id}`, {
-            method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          const data = await res.json();
-          if (data.error) {
-            showToast(data.error, 'error');
-            return;
-          }
+          await deleteDoc(doc(db, "achievements", id));
 
           showToast('Đã xoá trực tiếp thành tích thành công.', 'success');
           if (token) {
@@ -969,6 +1286,7 @@ export default function App() {
           }
           await fetchPublicData();
         } catch (err) {
+          console.error(err);
           showToast('Lỗi khi xoá thành tích.', 'error');
         }
       }
@@ -983,15 +1301,7 @@ export default function App() {
       'Đồng ý Xoá',
       async () => {
         try {
-          const res = await fetch(`/api/payouts/${id}`, {
-            method: 'DELETE',
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          const data = await res.json();
-          if (data.error) {
-            showToast(data.error, 'error');
-            return;
-          }
+          await deleteDoc(doc(db, "payouts", id));
 
           showToast('Đã xoá lịch sử phát tiền thành công.', 'success');
           if (token) {
@@ -999,6 +1309,7 @@ export default function App() {
           }
           await fetchPublicData();
         } catch (err) {
+          console.error(err);
           showToast('Lỗi khi xoá lịch sử chi tiền.', 'error');
         }
       }
@@ -1022,21 +1333,8 @@ export default function App() {
       'Đồng ý Đổi',
       async () => {
         try {
-          const res = await fetch(`/api/users/${editGradeUser}/gradeLevel`, {
-            method: 'PUT',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-              gradeLevel: editGradeLevel
-            })
-          });
-          const data = await res.json();
-          if (data.error) {
-            showToast(data.error, 'error');
-            return;
-          }
+          const userRef = doc(db, "users", editGradeUser);
+          await updateDoc(userRef, { gradeLevel: editGradeLevel });
 
           showToast(`Đã thay đổi cấp học của ${name} thành "${editGradeLevel}" thành công!`, 'success');
           setEditGradeUser('');
@@ -1045,6 +1343,7 @@ export default function App() {
           }
           await fetchPublicData();
         } catch (err) {
+          console.error(err);
           showToast('Lỗi khi cập nhật cấp học.', 'error');
         }
       }
@@ -1060,31 +1359,59 @@ export default function App() {
     }
 
     try {
-      const url = editingUserId ? `/api/admin/users/${editingUserId}` : '/api/admin/users';
-      const method = editingUserId ? 'PUT' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          username: userFormUsername,
-          name: userFormName,
-          nickname: userFormNickname,
-          role: userFormRole,
-          gradeLevel: userFormRole === 'admin' ? 'N/A' : userFormGrade
-        })
-      });
+      const cleanUsername = userFormUsername.trim().toLowerCase().replace(/\s+/g, '');
+      
+      // If editing, check other users for duplicate username
+      // If creating, check all users for duplicate username
+      const q = query(collection(db, "users"), where("username", "==", cleanUsername));
+      const qSnap = await getDocs(q);
+      
+      if (editingUserId) {
+        const duplicate = qSnap.docs.find(doc => doc.id !== editingUserId);
+        if (duplicate) {
+          showToast('Tên đăng nhập này đã được sử dụng bởi tài khoản khác!', 'error');
+          return;
+        }
 
-      const data = await res.json();
-      if (data.error) {
-        showToast(data.error, 'error');
-        return;
+        const userRef = doc(db, "users", editingUserId);
+        const userSnap = await getDoc(userRef);
+        if (!userSnap.exists()) {
+          showToast('Không tìm thấy tài khoản!', 'error');
+          return;
+        }
+
+        const userData = userSnap.data() as User;
+        const updatedUser = {
+          ...userData,
+          username: cleanUsername,
+          name: userFormName.trim(),
+          nickname: userFormNickname.trim(),
+          role: userFormRole,
+          gradeLevel: userFormRole === 'admin' ? 'N/A' : (userFormGrade || 'Cấp 2')
+        };
+
+        await setDoc(userRef, cleanFirestoreData(updatedUser));
+        showToast('Cập nhật tài khoản thành công!', 'success');
+      } else {
+        if (!qSnap.empty) {
+          showToast('Tên đăng nhập này đã tồn tại!', 'error');
+          return;
+        }
+
+        const newId = 'user_' + Math.random().toString(36).substring(2, 9);
+        const newUser: User = {
+          id: newId,
+          username: cleanUsername,
+          name: userFormName.trim(),
+          nickname: userFormNickname.trim(),
+          role: userFormRole,
+          gradeLevel: userFormRole === 'admin' ? 'N/A' : (userFormGrade || 'Cấp 2')
+        };
+
+        await setDoc(doc(db, "users", newId), cleanFirestoreData(newUser));
+        showToast('Tạo tài khoản mới thành công!', 'success');
       }
 
-      showToast(editingUserId ? 'Cập nhật tài khoản thành công!' : 'Tạo tài khoản mới thành công!', 'success');
-      
       // Reset form
       setEditingUserId(null);
       setUserFormUsername('');
@@ -1099,6 +1426,7 @@ export default function App() {
       }
       await fetchPublicData();
     } catch (err) {
+      console.error(err);
       showToast('Có lỗi xảy ra khi lưu tài khoản.', 'error');
     }
   };
@@ -1133,17 +1461,7 @@ export default function App() {
       'Đồng ý Xóa',
       async () => {
         try {
-          const res = await fetch(`/api/admin/users/${userId}`, {
-            method: 'DELETE',
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          });
-          const data = await res.json();
-          if (data.error) {
-            showToast(data.error, 'error');
-            return;
-          }
+          await deleteDoc(doc(db, "users", userId));
 
           showToast(`Đã xóa tài khoản của ${userNickname} thành công!`, 'success');
           if (token) {
@@ -1151,6 +1469,7 @@ export default function App() {
           }
           await fetchPublicData();
         } catch (err) {
+          console.error(err);
           showToast('Lỗi khi xóa tài khoản.', 'error');
         }
       }

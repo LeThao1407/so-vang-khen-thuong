@@ -22,13 +22,13 @@
   --color-slate-50: #020617; /* Darkest slate for main background */
   --color-slate-100: #1e293b; /* Medium dark slate for internal containers */
   --color-slate-200: #334155; /* Subtle dark slate for borders */
-  --color-slate-300: #475569;
-  --color-slate-400: #64748b; /* Muted text and boundaries */
-  --color-slate-500: #94a3b8; /* Readable secondary text */
+  --color-slate-300: #566a85; /* Better border and divider visibility */
+  --color-slate-400: #889bb5; /* Clear, readable secondary text & icons */
+  --color-slate-500: #aabccf; /* Bright enough muted text */
   --color-slate-600: #cbd5e1;
   --color-slate-700: #e2e8f0;
   --color-slate-800: #f1f5f9; /* Highly readable bold titles */
-  --color-slate-900: #f8fafc; /* Pure white for major display text */
+  --color-slate-900: #ffffff; /* Pure white for major display text */
   /* DO NOT override --color-slate-950, let it remain dark for text-slate-950 inside yellow/gold tags */
 
   /* Semi-transparent variations for background overlays and blurs */
@@ -159,6 +159,59 @@
   }
   & .recharts-text {
     fill: #94a3b8 !important;
+  }
+
+  /* General Form Fields Contrast & Aesthetics in Dark Mode */
+  & input[type="text"],
+  & input[type="number"],
+  & input[type="date"],
+  & input[type="password"],
+  & select,
+  & textarea {
+    background-color: #1e293b !important;
+    color: #ffffff !important;
+    border-color: #334155 !important;
+  }
+  
+  & input[type="text"]:focus,
+  & input[type="number"]:focus,
+  & input[type="date"]:focus,
+  & input[type="password"]:focus,
+  & select:focus,
+  & textarea:focus {
+    border-color: #818cf8 !important;
+    background-color: #0f172a !important;
+    box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.2) !important;
+  }
+
+  & ::placeholder {
+    color: #889bb5 !important;
+    opacity: 1 !important;
+  }
+
+  & select option {
+    background-color: #0f172a !important;
+    color: #ffffff !important;
+  }
+
+  /* Table styling in Dark Mode */
+  & th {
+    color: #ffffff !important;
+    background-color: #1e293b !important;
+    border-bottom-color: #334155 !important;
+  }
+  & td {
+    color: #e2e8f0 !important;
+    border-bottom-color: #1e293b !important;
+  }
+  & tr:hover {
+    background-color: rgba(30, 41, 59, 0.4) !important;
+  }
+
+  /* Specific modal headers & popups contrast */
+  & .bg-white {
+    background-color: #0f172a !important;
+    border-color: #1e293b !important;
   }
 
   /* Adjust default shadows to be softer, dark shadows */
